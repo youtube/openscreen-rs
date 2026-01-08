@@ -119,7 +119,7 @@ impl DiscoveryPublisher for MdnsPublisher {
             &hostname,
             (), // addresses (will be auto-detected)
             info.port,
-            Some(properties),
+            properties,
         )
         .map_err(|e| DiscoveryError::PublishFailed(format!("Failed to create service info: {e}")))?
         .enable_addr_auto();

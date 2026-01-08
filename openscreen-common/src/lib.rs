@@ -20,6 +20,7 @@
 //! (authentication) and the OpenScreen Application Protocol (presentations, agent info).
 
 mod error;
+pub mod quinn_varint;
 mod types;
 
 pub use error::*;

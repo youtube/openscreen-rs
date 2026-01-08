@@ -14,8 +14,8 @@
 
 //! Utility functions for mDNS service handling
 
+use openscreen_common::quinn_varint::{Codec, VarInt};
 use openscreen_discovery::{Fingerprint, FingerprintError, ServiceInfo, TxtRecords};
-use std::collections::HashMap;
 use std::time::SystemTime;
 
 /// Sanitize display name for mDNS instance name
@@ -33,20 +33,25 @@ pub fn sanitize_instance_name(display_name: &str) -> String {
     }
 }
 
-/// Build TXT record properties from PublishInfo
+/// Build TXT record properties from TxtRecords.
 ///
-/// Returns a HashMap suitable for mdns-sd
-pub fn build_txt_properties(txt: &TxtRecords) -> HashMap<String, String> {
-    let mut props = HashMap::new();
-    props.insert("fp".to_string(), txt.fp.clone());
-    props.insert("mv".to_string(), txt.mv.to_string());
-    props.insert("at".to_string(), txt.at.clone());
-    props
+/// Returns TxtProperty values with raw bytes, suitable for mdns-sd.
+/// The `mv` field is encoded as an RFC9000 variable-length integer.
+pub fn build_txt_properties(txt: &TxtRecords) -> Vec<mdns_sd::TxtProperty> {
+    let varint = VarInt::from_u32(txt.mv);
+    let mut mv_bytes = Vec::with_capacity(varint.size());
+    varint.encode(&mut mv_bytes);
+
+    vec![
+        ("fp", txt.fp.as_str()).into(),
+        ("mv", mv_bytes.as_slice()).into(),
+        ("at", txt.at.as_str()).into(),
+    ]
 }
 
 /// Parse TXT record properties into structured data
 ///
-/// Extracts fp, mv, and at values from mDNS TXT records
+/// Extracts fp, mv, and at values from mDNS TXT records.
 pub fn parse_txt_properties(
     properties: &mdns_sd::TxtProperties,
 ) -> Result<(Fingerprint, u32, String), ParseError> {
@@ -55,10 +60,10 @@ pub fn parse_txt_properties(
     let fingerprint = Fingerprint::from_base64(fp_str).map_err(ParseError::InvalidFingerprint)?;
 
     let mv = properties.get("mv").ok_or(ParseError::MissingField("mv"))?;
-    let mv_str = mv.val_str();
-    let metadata_version = mv_str
-        .parse::<u32>()
-        .map_err(|_| ParseError::InvalidMetadataVersion)?;
+    // Decode mv as RFC9000 varint from the raw bytes (not val_str - bytes may not be valid UTF-8)
+    let mut mv_bytes = mv.val().ok_or(ParseError::InvalidMetadataVersion)?;
+    let varint = VarInt::decode(&mut mv_bytes).map_err(|_| ParseError::InvalidMetadataVersion)?;
+    let metadata_version = varint.into_inner() as u32;
 
     let auth_token = properties
         .get("at")
@@ -219,12 +224,22 @@ mod tests {
         };
 
         let props = build_txt_properties(&txt);
-        assert_eq!(props.get("fp").unwrap(), "test_fingerprint");
-        assert_eq!(props.get("mv").unwrap(), "42");
-        assert_eq!(props.get("at").unwrap(), "test_token");
+        assert_eq!(props.len(), 3);
+
+        assert_eq!(props[0].key(), "fp");
+        assert_eq!(props[0].val_str(), "test_fingerprint");
+
+        assert_eq!(props[1].key(), "mv");
+        // mv=42 is encoded as RFC9000 varint: single byte 0x2A
+        assert_eq!(props[1].val(), Some([42u8].as_slice()));
+
+        assert_eq!(props[2].key(), "at");
+        assert_eq!(props[2].val_str(), "test_token");
     }
 
     // Note: parse_txt_properties tests require mdns-sd::TxtProperties which
     // is complex to construct in tests. These are integration-tested via
     // end-to-end mDNS tests instead.
+    //
+    // VarInt encode/decode tests are in openscreen-common/tests/varint.rs
 }
