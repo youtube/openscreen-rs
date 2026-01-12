@@ -63,7 +63,8 @@ pub fn parse_txt_properties(
     // Decode mv as RFC9000 varint from the raw bytes (not val_str - bytes may not be valid UTF-8)
     let mut mv_bytes = mv.val().ok_or(ParseError::InvalidMetadataVersion)?;
     let varint = VarInt::decode(&mut mv_bytes).map_err(|_| ParseError::InvalidMetadataVersion)?;
-    let metadata_version = varint.into_inner() as u32;
+    let metadata_version =
+        u32::try_from(varint.into_inner()).map_err(|_| ParseError::InvalidMetadataVersion)?;
 
     let auth_token = properties
         .get("at")

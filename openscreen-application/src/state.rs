@@ -15,9 +15,10 @@
 //! State machine types for the OpenScreen Application Protocol
 
 /// Application protocol state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApplicationState {
     /// Not authenticated (waiting for network layer to authenticate)
+    #[default]
     Idle,
     /// Authentication complete, no active presentation
     Authenticated,
@@ -37,11 +38,5 @@ impl ApplicationState {
     /// Check if we have an active presentation
     pub fn is_presenting(&self) -> bool {
         matches!(self, ApplicationState::Presenting)
-    }
-}
-
-impl Default for ApplicationState {
-    fn default() -> Self {
-        Self::Idle
     }
 }
