@@ -111,10 +111,14 @@ async fn main() -> Result<()> {
 #[allow(clippy::too_many_lines)]
 async fn run_sender(args: &Args) -> Result<()> {
     // Step 1: Device discovery or direct connection
-    let (service_info, hostname) = if let Some(host) = &args.direct_host {
+    let (service_info, ip_address) = if let Some(host) = &args.direct_host {
         println!("- Using direct connection");
         println!("  Host: {host}");
         println!("  Port: {}", args.direct_port);
+
+        let ip_address: core::net::IpAddr = host
+            .parse()
+            .context("Failed to parse direct host as IP address")?;
 
         // Parse fingerprint if provided, otherwise use dummy (all zeros)
         let fingerprint = if let Some(fp_hex) = &args.expected_fingerprint {
@@ -153,14 +157,14 @@ async fn run_sender(args: &Args) -> Result<()> {
         let service_info = ServiceInfo {
             instance_name: host.clone(),
             display_name: host.clone(),
-            host: host.clone(),
+            ip_address,
             port: args.direct_port,
             fingerprint,
             metadata_version: 1,
             auth_token,
             discovered_at: std::time::SystemTime::now(),
         };
-        (service_info, host.clone())
+        (service_info, ip_address)
     } else {
         // Discover devices via mDNS
         println!("WAIT: Discovering OpenScreen receivers...");
@@ -195,7 +199,7 @@ async fn run_sender(args: &Args) -> Result<()> {
                 format!("[{}]", i + 1).bright_white().bold(),
                 service.display_name.bright_white(),
                 &service.fingerprint.to_hex()[..16],
-                service.host,
+                service.ip_address,
                 service.port
             );
         }
@@ -209,9 +213,9 @@ async fn run_sender(args: &Args) -> Result<()> {
         );
         println!();
 
-        let hostname = selected.host.clone();
+        let ip_address = selected.ip_address;
 
-        (selected.clone(), hostname)
+        (selected.clone(), ip_address)
     };
 
     // Step 2: Create Quinn client with expected fingerprint
@@ -258,11 +262,9 @@ async fn run_sender(args: &Args) -> Result<()> {
     );
     std::io::Write::flush(&mut std::io::stdout())?;
 
-    let server_addr = format!("{}:{}", hostname, service_info.port)
-        .parse()
-        .context("Failed to parse server address")?;
+    let server_addr = core::net::SocketAddr::new(ip_address, service_info.port);
 
-    match client.connect(server_addr, &hostname).await {
+    match client.connect(server_addr, &ip_address.to_string()).await {
         Ok(()) => {
             println!("OK:");
             info!("QUIC connection and authentication complete");
