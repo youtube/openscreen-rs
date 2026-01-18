@@ -198,6 +198,8 @@ impl Codec for VarInt {
         Ok(Self(x))
     }
 
+    // Pre-existing in upstream
+    #[allow(clippy::cast_possible_truncation)]
     fn encode<B: BufMut>(&self, w: &mut B) {
         let x = self.0;
         if x < 2u64.pow(6) {
