@@ -116,12 +116,14 @@ pub struct QuinnClient<C: CryptoProvider> {
 }
 
 impl<C: CryptoProvider> QuinnClient<C> {
-    /// Create a new Quinn client with fingerprint verification
+    /// Create a new Quinn client with a W3C-compliant certificate
     ///
     /// # Arguments
     /// * `crypto_provider` - Implementation of CryptoProvider for crypto operations
     /// * `bind_addr` - Local address to bind to (typically "0.0.0.0:0")
     /// * `expected_fingerprint` - Expected SPKI fingerprint from mDNS discovery (for MITM protection)
+    /// * `cert_der` - DER-encoded certificate (use `openscreen_application::cert::CertificateKey`)
+    /// * `key_der` - DER-encoded private key (PKCS#8 format)
     ///
     /// # Returns
     /// * `Ok(QuinnClient)` - Client successfully created
@@ -131,19 +133,16 @@ impl<C: CryptoProvider> QuinnClient<C> {
     ///
     /// The `expected_fingerprint` MUST be the fingerprint from mDNS discovery (`fp=` TXT record).
     /// The TLS handshake will reject connections to servers with mismatched fingerprints.
+    ///
+    /// The certificate MUST have a W3C-compliant 160-bit serial number (use `CertificateKey::generate()`).
     pub fn new(
         crypto_provider: C,
         bind_addr: SocketAddr,
         expected_fingerprint: [u8; 32],
+        cert_der: Vec<u8>,
+        key_der: Vec<u8>,
     ) -> Result<Self, QuinnError> {
-        // Generate self-signed certificate for the client
-        // This is required for TLS fingerprint extraction per RFC 9382
-        debug!("Generating self-signed client certificate");
-        let cert = rcgen::generate_simple_self_signed(vec!["openscreen-client".into()])
-            .map_err(|e| QuinnError::Tls(format!("Failed to generate certificate: {e}")))?;
-
-        let cert_der = cert.cert.der().to_vec();
-        let priv_key_der = cert.key_pair.serialize_der();
+        debug!("Configuring TLS with provided certificate");
 
         // Create TLS client config with ALPN "osp"
         // Use FingerprintVerifier to reject mismatched fingerprints during TLS handshake
@@ -154,7 +153,7 @@ impl<C: CryptoProvider> QuinnClient<C> {
             )))
             .with_client_auth_cert(
                 vec![CertificateDer::from(cert_der.clone())],
-                rustls::pki_types::PrivateKeyDer::Pkcs8(priv_key_der.into()),
+                rustls::pki_types::PrivateKeyDer::Pkcs8(key_der.into()),
             )
             .map_err(|e| QuinnError::Tls(format!("Failed to configure TLS: {e}")))?;
 
@@ -890,11 +889,70 @@ mod tests {
     use super::*;
     use openscreen_crypto::MockCryptoProvider;
 
+    /// Helper to generate test certificates (tests only - not W3C compliant)
+    ///
+    /// Note: This is intentionally separate from tests/common/mod.rs because unit tests
+    /// in src/ and integration tests in tests/ typically have separate test utilities.
+    fn generate_test_cert(hostname: &str) -> (Vec<u8>, Vec<u8>) {
+        let key_pair = rcgen::KeyPair::generate().expect("Failed to generate key pair");
+        let mut params = rcgen::CertificateParams::new(vec![hostname.to_string()])
+            .expect("Failed to create certificate params");
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, hostname);
+        let cert = params
+            .self_signed(&key_pair)
+            .expect("Failed to self-sign certificate");
+        (cert.der().to_vec(), key_pair.serialize_der())
+    }
+
+    #[tokio::test]
+    async fn test_client_cert_has_subject_cn() {
+        // Verify that certificates have Subject CN set per W3C spec
+        let crypto = MockCryptoProvider::new(b"test");
+        let expected_fp = [0u8; 32];
+        let hostname = "test-hostname.local";
+        let (cert_der, key_der) = generate_test_cert(hostname);
+        let client = QuinnClient::new(
+            crypto,
+            "0.0.0.0:0".parse().unwrap(),
+            expected_fp,
+            cert_der,
+            key_der,
+        )
+        .expect("Failed to create QuinnClient");
+
+        // Parse the client's certificate
+        use x509_parser::prelude::*;
+        let (_, x509_cert) = X509Certificate::from_der(&client.local_cert_der)
+            .expect("Failed to parse client certificate");
+
+        // Verify Subject CN is set per W3C spec (network.bs lines 358-361)
+        let subject = x509_cert.subject();
+        let cn = subject
+            .iter_common_name()
+            .next()
+            .expect("Certificate must have Subject CN");
+
+        assert_eq!(
+            cn.as_str().expect("CN must be valid string"),
+            hostname,
+            "Subject CN must match agent hostname per W3C spec"
+        );
+    }
+
     #[tokio::test]
     async fn test_create_client() {
         let crypto = MockCryptoProvider::new(b"test");
         let expected_fp = [0u8; 32]; // Dummy fingerprint for testing
-        let client = QuinnClient::new(crypto, "0.0.0.0:0".parse().unwrap(), expected_fp);
+        let (cert_der, key_der) = generate_test_cert("test.local");
+        let client = QuinnClient::new(
+            crypto,
+            "0.0.0.0:0".parse().unwrap(),
+            expected_fp,
+            cert_der,
+            key_der,
+        );
         assert!(client.is_ok());
     }
 
@@ -902,8 +960,15 @@ mod tests {
     async fn test_set_psk_and_token() {
         let crypto = MockCryptoProvider::new(b"test");
         let expected_fp = [0u8; 32]; // Dummy fingerprint for testing
-        let mut client =
-            QuinnClient::new(crypto, "0.0.0.0:0".parse().unwrap(), expected_fp).unwrap();
+        let (cert_der, key_der) = generate_test_cert("test.local");
+        let mut client = QuinnClient::new(
+            crypto,
+            "0.0.0.0:0".parse().unwrap(),
+            expected_fp,
+            cert_der,
+            key_der,
+        )
+        .unwrap();
 
         assert!(client.set_psk(b"my-secret-password").is_ok());
         assert!(client.set_auth_token(b"token-123").is_ok());

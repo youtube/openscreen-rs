@@ -21,13 +21,7 @@ extern crate std;
 
 use anyhow::{Context, Result};
 use openscreen_discovery::Fingerprint;
-use std::{
-    format,
-    path::Path,
-    string::{String, ToString},
-    vec,
-    vec::Vec,
-};
+use std::{format, path::Path, string::String, vec, vec::Vec};
 use uuid::Uuid;
 
 /// OpenScreen certificate serial number (160 bits per W3C spec)
@@ -166,9 +160,11 @@ fn sanitize_hostname_component(s: &str) -> String {
 }
 
 /// Certificate and private key pair
+///
+/// Stores certificate and key as DER-encoded bytes
 pub struct CertificateKey {
-    pub cert: rcgen::CertifiedKey,
     pub cert_der: Vec<u8>,
+    pub key_der: Vec<u8>,
     pub fingerprint: Fingerprint,
     pub serial_number: SerialNumber,
     pub hostname: String,
@@ -192,6 +188,7 @@ impl CertificateKey {
 
         // Generate ECDSA key pair
         let key_pair = rcgen::KeyPair::generate().context("Failed to generate key pair")?;
+        let key_der = key_pair.serialize_der();
 
         // Create certificate parameters with hostname as Subject CN
         let mut params = rcgen::CertificateParams::new(vec![hostname.clone()])
@@ -213,13 +210,13 @@ impl CertificateKey {
 
         let cert_der = cert.der().to_vec();
 
-        // Calculate fingerprint (SPKI per spec, not full cert - to be fixed in #1)
+        // Calculate fingerprint (SPKI SHA-256 per W3C spec)
         let fingerprint = Fingerprint::from_der_cert(&cert_der)
             .map_err(|e| anyhow::anyhow!("Failed to calculate fingerprint: {e:?}"))?;
 
         Ok(Self {
-            cert: rcgen::CertifiedKey { cert, key_pair },
             cert_der,
+            key_der,
             fingerprint,
             serial_number,
             hostname,
@@ -241,6 +238,7 @@ impl CertificateKey {
             .with_context(|| format!("Failed to read private key from {}", key_path.display()))?;
 
         let key_pair = rcgen::KeyPair::from_pem(&key_pem).context("Failed to parse private key")?;
+        let key_der = key_pair.serialize_der();
 
         // Parse PEM to get DER bytes
         let cert_der = pem::parse(&cert_pem)
@@ -248,7 +246,7 @@ impl CertificateKey {
             .contents()
             .to_vec();
 
-        // Calculate fingerprint
+        // Calculate fingerprint (SPKI SHA-256 per W3C spec)
         let fingerprint = Fingerprint::from_der_cert(&cert_der)
             .map_err(|e| anyhow::anyhow!("Failed to calculate fingerprint: {e:?}"))?;
 
@@ -258,18 +256,9 @@ impl CertificateKey {
 
         let hostname = compute_hostname(&serial_number, instance_name, domain);
 
-        // Reconstruct certificate params from the existing cert
-        // Note: We can't perfectly reconstruct all params, but we can create a basic one
-        let params = rcgen::CertificateParams::new(vec!["loaded-cert".to_string()])
-            .context("Failed to create certificate params")?;
-
-        let cert = params
-            .self_signed(&key_pair)
-            .context("Failed to create certificate")?;
-
         Ok(Self {
-            cert: rcgen::CertifiedKey { cert, key_pair },
             cert_der,
+            key_der,
             fingerprint,
             serial_number,
             hostname,
@@ -286,8 +275,14 @@ impl CertificateKey {
         let cert_path = dir.join("cert.pem");
         let key_path = dir.join("key.pem");
 
-        let cert_pem = self.cert.cert.pem();
-        let key_pem = self.cert.key_pair.serialize_pem();
+        // Encode cert_der as PEM
+        let cert_pem_obj = pem::Pem::new("CERTIFICATE", self.cert_der.clone());
+        let cert_pem = pem::encode(&cert_pem_obj);
+
+        // Encode key_der as PEM
+        // The key is in PKCS#8 format, which uses the "PRIVATE KEY" tag
+        let key_pem_obj = pem::Pem::new("PRIVATE KEY", self.key_der.clone());
+        let key_pem = pem::encode(&key_pem_obj);
 
         std::fs::write(&cert_path, cert_pem)
             .with_context(|| format!("Failed to write certificate to {}", cert_path.display()))?;
@@ -321,6 +316,7 @@ impl CertificateKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::ToString;
 
     #[test]
     fn test_serial_number_format() {

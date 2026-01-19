@@ -99,7 +99,15 @@ impl rustls::server::danger::ClientCertVerifier for AcceptAnyClientCert {
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     use std::net::SocketAddr;
 ///     let addr: SocketAddr = "0.0.0.0:4433".parse()?;
-///     let server = QuinnServer::bind(addr, "test-psk").await?;
+///
+///     // Generate test certificate (for production, use W3C-compliant certificates)
+///     let key_pair = rcgen::KeyPair::generate()?;
+///     let mut params = rcgen::CertificateParams::new(vec!["test-server.local".to_string()])?;
+///     params.distinguished_name.push(rcgen::DnType::CommonName, "test-server.local");
+///     let cert = params.self_signed(&key_pair)?;
+///     let (cert_der, key_der) = (cert.der().to_vec(), key_pair.serialize_der());
+///
+///     let server = QuinnServer::bind(addr, "test-psk", cert_der, key_der, None).await?;
 ///
 ///     while let Some(result) = server.accept().await {
 ///         match result {
@@ -127,64 +135,17 @@ pub struct QuinnServer {
 }
 
 impl QuinnServer {
-    /// Create and bind a new OpenScreen server
+    /// Create and bind a new OpenScreen server with a W3C-compliant certificate
     ///
     /// # Arguments
     /// * `bind_addr` - Socket address to bind to (e.g., "0.0.0.0:4433")
     /// * `psk` - Pre-shared key for SPAKE2 authentication
-    pub async fn bind(bind_addr: impl Into<SocketAddr>, psk: impl Into<String>) -> Result<Self> {
-        let bind_addr = bind_addr.into();
-        let psk = psk.into();
-
-        debug!("Generating self-signed certificate");
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-            .context("Failed to generate certificate")?;
-        let cert_der = cert.cert.der().to_vec();
-        let priv_key = cert.key_pair.serialize_der();
-
-        debug!("Configuring TLS with client cert verifier");
-        let client_cert_verifier = Arc::new(AcceptAnyClientCert);
-
-        let mut server_crypto = rustls::ServerConfig::builder()
-            .with_client_cert_verifier(client_cert_verifier)
-            .with_single_cert(
-                vec![rustls::pki_types::CertificateDer::from(cert_der.clone())],
-                rustls::pki_types::PrivateKeyDer::Pkcs8(priv_key.into()),
-            )
-            .context("Failed to create TLS config")?;
-
-        server_crypto.alpn_protocols = vec![b"osp".to_vec()];
-
-        let server_config = quinn::ServerConfig::with_crypto(Arc::new(
-            quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)
-                .context("Failed to create QUIC server config")?,
-        ));
-
-        let endpoint = quinn::Endpoint::server(server_config, bind_addr)
-            .context("Failed to create endpoint")?;
-
-        info!("QuinnServer bound to {}", bind_addr);
-
-        Ok(Self {
-            endpoint,
-            psk,
-            cert_der,
-            auth_token: None,
-        })
-    }
-
-    /// Create and bind a new OpenScreen server with a provided certificate
-    ///
-    /// This variant allows you to provide your own certificate instead of generating one.
-    /// Useful for persistent identity and mDNS discovery integration.
-    ///
-    /// # Arguments
-    /// * `bind_addr` - Socket address to bind to (e.g., "0.0.0.0:4433")
-    /// * `psk` - Pre-shared key for SPAKE2 authentication
-    /// * `cert_der` - DER-encoded certificate
+    /// * `cert_der` - DER-encoded certificate (use `openscreen_application::cert::CertificateKey`)
     /// * `key_der` - DER-encoded private key (PKCS#8 format)
     /// * `auth_token` - Optional authentication token from mDNS (for off-network attack prevention)
-    pub async fn bind_with_cert(
+    ///
+    /// The certificate MUST have a W3C-compliant 160-bit serial number (use `CertificateKey::generate()`).
+    pub async fn bind(
         bind_addr: impl Into<SocketAddr>,
         psk: impl Into<String>,
         cert_der: Vec<u8>,

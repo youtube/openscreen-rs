@@ -104,9 +104,8 @@ async fn main() -> Result<()> {
 async fn run_receiver(args: &Args) -> Result<()> {
     // Step 1: Load or generate certificate
     println!("WAIT: Loading certificate...");
-    let cert_key =
-        CertificateKey::load_or_generate(&args.cert_dir, "receiver", "_openscreen._tcp.local")
-            .context("Failed to load/generate certificate")?;
+    let cert_key = CertificateKey::load_or_generate(&args.cert_dir, &args.name, "local")
+        .context("Failed to load/generate certificate")?;
 
     println!("OK: Certificate loaded");
     println!(
@@ -161,19 +160,15 @@ async fn run_receiver(args: &Args) -> Result<()> {
 
     println!("WAIT: Initializing QUIC server...");
 
-    // Convert rcgen certificate to Quinn format
-    let (cert_der, key_der) = (
-        cert_key.cert.cert.der().to_vec(),
-        cert_key.cert.key_pair.serialize_der(),
-    );
+    // Pass certificate and key to Quinn
+    let (cert_der, key_der) = (cert_key.cert_der, cert_key.key_der);
 
     // Pass auth token to server for validation
     let auth_token_bytes = Some(auth_token.as_str().as_bytes().to_vec());
 
-    let server =
-        QuinnServer::bind_with_cert(bind_addr, &args.psk, cert_der, key_der, auth_token_bytes)
-            .await
-            .context("Failed to bind server")?;
+    let server = QuinnServer::bind(bind_addr, &args.psk, cert_der, key_der, auth_token_bytes)
+        .await
+        .context("Failed to bind server")?;
 
     println!("OK: Listening on {bind_addr}");
     println!("{}", "Waiting for connections...".bright_cyan());

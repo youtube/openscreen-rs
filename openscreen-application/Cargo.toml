@@ -30,6 +30,7 @@ uuid = { version = "1.10", features = ["v4"], optional = true }
 base64 = { version = "0.22", optional = true }
 x509-parser = { version = "0.16", optional = true }
 hex = { version = "0.4", optional = true }
+hostname = { version = "0.4", optional = true }
 
 [[bin]]
 name = "app-sender"
@@ -42,7 +43,24 @@ required-features = ["bin"]
 
 [features]
 default = ["bin"]
-bin = ["clap", "tokio", "anyhow", "colored", "tracing", "tracing-subscriber", "quinn", "rcgen", "pem", "uuid", "base64", "x509-parser", "hex", "openscreen-discovery", "openscreen-discovery-mdns"]
+bin = [
+    "anyhow",
+    "base64",
+    "clap",
+    "colored",
+    "hex",
+    "hostname",
+    "openscreen-discovery-mdns",
+    "openscreen-discovery",
+    "pem",
+    "quinn",
+    "rcgen",
+    "tokio",
+    "tracing-subscriber",
+    "tracing",
+    "uuid",
+    "x509-parser",
+    ]
 
 [dev-dependencies]
 tempfile = "3.8"

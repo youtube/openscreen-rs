@@ -20,6 +20,9 @@
 //! Unlike the integration tests, these tests focus ONLY on TLS-level
 //! fingerprint verification without requiring full SPAKE2 authentication.
 
+mod common;
+
+use common::generate_test_cert;
 use openscreen_crypto_rustcrypto::RustCryptoCryptoProvider;
 use openscreen_quinn::QuinnClient;
 use std::net::SocketAddr;
@@ -30,7 +33,8 @@ async fn create_test_server(psk: &str) -> (SocketAddr, [u8; 32], tokio::task::Jo
     use openscreen_quinn::QuinnServer;
 
     let server_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let server = QuinnServer::bind(server_addr, psk)
+    let (cert_der, key_der) = generate_test_cert("test-server.local");
+    let server = QuinnServer::bind(server_addr, psk, cert_der, key_der, None)
         .await
         .expect("Failed to start test server");
 
@@ -61,8 +65,15 @@ async fn test_tls_accepts_correct_fingerprint() {
     // Create client with CORRECT fingerprint
     let crypto_provider = RustCryptoCryptoProvider::new();
     let client_bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let mut client = QuinnClient::new(crypto_provider, client_bind, server_fingerprint)
-        .expect("Failed to create client");
+    let (cert_der, key_der) = generate_test_cert("test-client.local");
+    let mut client = QuinnClient::new(
+        crypto_provider,
+        client_bind,
+        server_fingerprint,
+        cert_der,
+        key_der,
+    )
+    .expect("Failed to create client");
 
     client.set_psk(b"test-psk").expect("Failed to set PSK");
 
@@ -114,8 +125,15 @@ async fn test_tls_rejects_wrong_fingerprint() {
     let wrong_fingerprint = [0x42u8; 32]; // Definitely wrong!
     let crypto_provider = RustCryptoCryptoProvider::new();
     let client_bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let mut client = QuinnClient::new(crypto_provider, client_bind, wrong_fingerprint)
-        .expect("Failed to create client");
+    let (cert_der, key_der) = generate_test_cert("test-client.local");
+    let mut client = QuinnClient::new(
+        crypto_provider,
+        client_bind,
+        wrong_fingerprint,
+        cert_der,
+        key_der,
+    )
+    .expect("Failed to create client");
 
     client.set_psk(b"test-psk").expect("Failed to set PSK");
 
@@ -166,8 +184,15 @@ async fn test_tls_rejects_zero_fingerprint() {
     let zero_fingerprint = [0u8; 32];
     let crypto_provider = RustCryptoCryptoProvider::new();
     let client_bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let mut client = QuinnClient::new(crypto_provider, client_bind, zero_fingerprint)
-        .expect("Failed to create client");
+    let (cert_der, key_der) = generate_test_cert("test-client.local");
+    let mut client = QuinnClient::new(
+        crypto_provider,
+        client_bind,
+        zero_fingerprint,
+        cert_der,
+        key_der,
+    )
+    .expect("Failed to create client");
 
     client.set_psk(b"test-psk").expect("Failed to set PSK");
 
@@ -209,8 +234,15 @@ async fn test_fingerprint_exact_match_required() {
 
     let crypto_provider = RustCryptoCryptoProvider::new();
     let client_bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let mut client = QuinnClient::new(crypto_provider, client_bind, almost_correct_fingerprint)
-        .expect("Failed to create client");
+    let (cert_der, key_der) = generate_test_cert("test-client.local");
+    let mut client = QuinnClient::new(
+        crypto_provider,
+        client_bind,
+        almost_correct_fingerprint,
+        cert_der,
+        key_der,
+    )
+    .expect("Failed to create client");
 
     client.set_psk(b"test-psk").expect("Failed to set PSK");
 
