@@ -51,12 +51,6 @@ impl SerialNumber {
         }
     }
 
-    /// Increment counter (for certificate rotation)
-    #[allow(dead_code)]
-    pub fn increment(&mut self) {
-        self.counter = self.counter.wrapping_add(1);
-    }
-
     /// Convert to 160-bit byte array (UUID + counter in big-endian)
     pub fn to_bytes(&self) -> [u8; 20] {
         let mut bytes = [0u8; 20];
@@ -416,35 +410,6 @@ mod tests {
             uuid_part.iter().any(|&b| b != 0),
             "UUID should not be all zeros"
         );
-    }
-
-    #[test]
-    fn test_serial_number_increment() {
-        let mut serial = SerialNumber::generate();
-        let original_uuid = serial.uuid_base;
-
-        // Counter should start at 0
-        assert_eq!(serial.counter, 0);
-
-        // Increment should increase counter
-        serial.increment();
-        assert_eq!(serial.counter, 1);
-
-        serial.increment();
-        assert_eq!(serial.counter, 2);
-
-        // UUID should remain unchanged
-        assert_eq!(serial.uuid_base, original_uuid);
-    }
-
-    #[test]
-    fn test_serial_number_counter_wraps() {
-        let mut serial = SerialNumber::generate();
-        serial.counter = u32::MAX;
-
-        // Should wrap around to 0
-        serial.increment();
-        assert_eq!(serial.counter, 0);
     }
 
     #[test]

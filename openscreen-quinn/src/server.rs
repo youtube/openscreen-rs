@@ -588,22 +588,6 @@ impl QuinnServer {
 
         Ok(fingerprint)
     }
-
-    /// Compute SHA-256 fingerprint of full certificate DER
-    ///
-    /// WARN: DEPRECATED: Use `compute_spki_fingerprint()` for OpenScreen compliance
-    #[allow(dead_code)]
-    #[deprecated(note = "Use compute_spki_fingerprint() for W3C OpenScreen compliance")]
-    fn compute_certificate_fingerprint(cert_der: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(cert_der);
-        let hash = hasher.finalize();
-
-        let mut fingerprint = [0u8; 32];
-        fingerprint.copy_from_slice(&hash);
-
-        fingerprint
-    }
 }
 
 /// An authenticated OpenScreen connection

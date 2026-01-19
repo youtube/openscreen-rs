@@ -14,7 +14,6 @@
 
 #![no_std]
 #![allow(
-    dead_code,
     unused_attributes,
     deprecated,
     clippy::too_many_lines,
@@ -205,7 +204,6 @@ impl From<MessageError> for ApplicationError {
 pub struct ApplicationStateMachine {
     network: Spake2StateMachine,
     app_state: ApplicationState,
-    next_presentation_id: u32,
     next_request_id: u64,
 }
 
@@ -215,7 +213,6 @@ impl ApplicationStateMachine {
         Self {
             network: Spake2StateMachine::default(),
             app_state: ApplicationState::Idle,
-            next_presentation_id: 1,
             next_request_id: 1,
         }
     }

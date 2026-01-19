@@ -33,6 +33,17 @@ pub fn sanitize_instance_name(display_name: &str) -> String {
     }
 }
 
+/// Convert mdns-sd ScopedIp to IpAddr by stripping scope ID if present
+fn scoped_ip_to_ip_addr(host: &mdns_sd::ScopedIp) -> Result<core::net::IpAddr, ParseError> {
+    let host_str = host.to_string();
+    let host_clean = if let Some(idx) = host_str.find('%') {
+        &host_str[..idx]
+    } else {
+        &host_str
+    };
+    host_clean.parse().map_err(|_| ParseError::NoAddress)
+}
+
 /// Build TXT record properties from TxtRecords.
 ///
 /// Returns TxtProperty values with raw bytes, suitable for mdns-sd.
@@ -75,10 +86,27 @@ pub fn parse_txt_properties(
     Ok((fingerprint, metadata_version, auth_token))
 }
 
+/// Extract display name from mDNS full service name
+///
+/// The full mDNS service name has the format: `<instance>.<service>`
+/// For example: `My-Device._openscreen._udp.local.`
+///
+/// This function extracts just the instance name (e.g., `My-Device`) for
+/// user-friendly display by taking the first component before the dot.
+///
+/// # Arguments
+/// * `full_name` - The full mDNS service name
+///
+/// # Returns
+/// The instance name suitable for display
+fn extract_display_name(full_name: &str) -> String {
+    full_name.split('.').next().unwrap_or(full_name).to_string()
+}
+
 /// Build ServiceInfo from mdns-sd ResolvedService
 ///
 /// Converts from mdns-sd types to our ServiceInfo
-pub fn service_info_from_mdns_resolved(
+pub fn service_info_from_mdns(
     mdns_info: &mdns_sd::ResolvedService,
 ) -> Result<ServiceInfo, ParseError> {
     let (fingerprint, metadata_version, auth_token) =
@@ -103,69 +131,15 @@ pub fn service_info_from_mdns_resolved(
             // Last resort: use any address and strip zone ID if present
             addresses.iter().next()
         })
-        .ok_or(ParseError::NoAddress)?
-        .to_string();
+        .ok_or(ParseError::NoAddress)?;
 
-    // Strip IPv6 zone ID if present (e.g., "fe80::1%lo0" -> "fe80::1")
-    let host = if let Some(zone_index) = host.find('%') {
-        host[..zone_index].to_string()
-    } else {
-        host
-    };
+    let ip_address = scoped_ip_to_ip_addr(host)?;
 
     Ok(ServiceInfo {
         instance_name: mdns_info.get_fullname().to_string(),
-        display_name: mdns_info.get_fullname().to_string(), // Will be cleaned up
-        host,
-        port: mdns_info.get_port(),
-        fingerprint,
-        metadata_version,
-        auth_token: openscreen_discovery::AuthToken::from_string(auth_token),
-        discovered_at: SystemTime::now(),
-    })
-}
-
-/// Build ServiceInfo from mdns-sd ServiceInfo
-///
-/// Converts from mdns-sd types to our ServiceInfo
-#[allow(dead_code)]
-pub fn service_info_from_mdns(mdns_info: &mdns_sd::ServiceInfo) -> Result<ServiceInfo, ParseError> {
-    let (fingerprint, metadata_version, auth_token) =
-        parse_txt_properties(mdns_info.get_properties())?;
-
-    // Get host address: Prefer IPv4 over IPv6, and non-link-local over link-local
-    // Link-local IPv6 addresses (fe80::...) often include zone IDs (%lo0, %eth0, etc.)
-    // which can't be parsed as socket addresses. IPv4 addresses are more reliable.
-    let addresses = mdns_info.get_addresses();
-
-    // Try to find an IPv4 address first
-    let host = addresses
-        .iter()
-        .find(|addr| addr.is_ipv4())
-        .or_else(|| {
-            // If no IPv4, try to find a non-link-local IPv6 address
-            addresses
-                .iter()
-                .find(|addr| addr.is_ipv6() && !addr.to_string().starts_with("fe80:"))
-        })
-        .or_else(|| {
-            // Last resort: use any address and strip zone ID if present
-            addresses.iter().next()
-        })
-        .ok_or(ParseError::NoAddress)?
-        .to_string();
-
-    // Strip IPv6 zone ID if present (e.g., "fe80::1%lo0" -> "fe80::1")
-    let host = if let Some(zone_index) = host.find('%') {
-        host[..zone_index].to_string()
-    } else {
-        host
-    };
-
-    Ok(ServiceInfo {
-        instance_name: mdns_info.get_fullname().to_string(),
-        display_name: mdns_info.get_fullname().to_string(), // Will be cleaned up
-        host,
+        display_name: extract_display_name(mdns_info.get_fullname()),
+        hostname: mdns_info.get_hostname().trim_end_matches('.').to_string(),
+        ip_address,
         port: mdns_info.get_port(),
         fingerprint,
         metadata_version,
@@ -214,6 +188,33 @@ mod tests {
         let sanitized = sanitize_instance_name(&name);
         assert_eq!(sanitized.len(), 63);
         assert!(!sanitized.ends_with('\0'));
+    }
+
+    #[test]
+    fn test_extract_display_name() {
+        // Normal case: full service name with service suffix
+        assert_eq!(
+            extract_display_name("My-Device._openscreen._udp.local."),
+            "My-Device"
+        );
+
+        // Edge case: just the instance name (no suffix)
+        assert_eq!(extract_display_name("My-Device"), "My-Device");
+
+        // Edge case: empty string
+        assert_eq!(extract_display_name(""), "");
+
+        // Real-world example with spaces
+        assert_eq!(
+            extract_display_name("Living Room TV._openscreen._udp.local."),
+            "Living Room TV"
+        );
+
+        // Name conflict case (mDNS added number)
+        assert_eq!(
+            extract_display_name("My-Device (2)._openscreen._udp.local."),
+            "My-Device (2)"
+        );
     }
 
     #[test]

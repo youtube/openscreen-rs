@@ -14,7 +14,7 @@
 
 //! mDNS browser implementation
 
-use crate::utils::service_info_from_mdns_resolved;
+use crate::utils::service_info_from_mdns;
 use crate::SERVICE_NAME;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
@@ -125,7 +125,7 @@ impl DiscoveryBrowser for MdnsBrowser {
                             mdns_sd::ServiceEvent::ServiceResolved(info) => {
                                 log::debug!("Service resolved: {}", info.get_fullname());
 
-                                match service_info_from_mdns_resolved(&info) {
+                                match service_info_from_mdns(&info) {
                                     Ok(service_info) => {
                                         let fullname = info.get_fullname().to_string();
                                         services.write().await.insert(fullname, service_info);
@@ -195,7 +195,7 @@ impl DiscoveryBrowser for MdnsBrowser {
                         Ok(event) => {
                             match event {
                                 mdns_sd::ServiceEvent::ServiceResolved(info) => {
-                                    match service_info_from_mdns_resolved(&info) {
+                                    match service_info_from_mdns(&info) {
                                         Ok(service_info) => {
                                             let fullname = info.get_fullname().to_string();
                                             services.write().await.insert(fullname.clone(), service_info.clone());

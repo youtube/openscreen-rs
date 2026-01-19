@@ -156,7 +156,7 @@ async fn run_receiver(args: &Args) -> Result<()> {
 
     // Step 4: Start QUIC server
     let bind_addr = format!("0.0.0.0:{}", args.port)
-        .parse::<std::net::SocketAddr>()
+        .parse::<core::net::SocketAddr>()
         .context("Invalid bind address")?;
 
     println!("WAIT: Initializing QUIC server...");
