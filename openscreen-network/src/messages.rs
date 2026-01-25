@@ -66,7 +66,8 @@ fn encode_type_key<const N: usize>(
 
     // Encode varint to a small stack buffer, then copy
     let mut temp = [0u8; 8];
-    varint.encode(&mut temp.as_mut_slice());
+    let mut slice = &mut temp[..];
+    varint.encode(&mut slice);
     buf.extend_from_slice(&temp[..size])
         .map_err(|_| MessageError::BufferFull)
 }
@@ -290,9 +291,12 @@ impl AuthCapabilities {
         if type_key != NetworkMessageType::AuthCapabilities as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
 
-        // Decode CBOR body (map only, no array wrapper)
-        let mut decoder = Decoder::new(&data[consumed..]);
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 2 or 3 fields (field 2 is mandatory, field 1 is optional)
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -403,9 +407,12 @@ impl<'a> AuthSpake2Handshake<'a> {
         if type_key != NetworkMessageType::AuthSpake2Handshake as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
 
-        // Decode CBOR body (map only, no array wrapper)
-        let mut decoder = Decoder::new(&data[consumed..]);
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -510,9 +517,12 @@ impl<'a> AuthSpake2Confirmation<'a> {
         if type_key != NetworkMessageType::AuthSpake2Confirmation as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
 
-        // Decode CBOR body (map only, no array wrapper)
-        let mut decoder = Decoder::new(&data[consumed..]);
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 1 field
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -574,9 +584,12 @@ impl AuthStatus {
         if type_key != NetworkMessageType::AuthStatus as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
 
-        // Decode CBOR body (map only, no array wrapper)
-        let mut decoder = Decoder::new(&data[consumed..]);
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 1 field
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -626,21 +639,22 @@ impl<'a> NetworkMessage<'a> {
     /// Decode a NetworkMessage from bytes by inspecting the type key
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
         // Read type key as RFC 9000 varint to determine message type
-        let (type_key, _consumed) = decode_type_key(data)?;
+        let (type_key, consumed) = decode_type_key(data)?;
+        let body = &data[consumed..];
 
-        // Now decode the full message based on type
+        // Decode the CBOR body based on message type
         match NetworkMessageType::from_u16(type_key)? {
             NetworkMessageType::AuthCapabilities => Ok(NetworkMessage::AuthCapabilities(
-                AuthCapabilities::decode(data)?,
+                AuthCapabilities::decode_body(body)?,
             )),
             NetworkMessageType::AuthSpake2Handshake => Ok(NetworkMessage::AuthSpake2Handshake(
-                AuthSpake2Handshake::decode(data)?,
+                AuthSpake2Handshake::decode_body(body)?,
             )),
             NetworkMessageType::AuthSpake2Confirmation => Ok(
-                NetworkMessage::AuthSpake2Confirmation(AuthSpake2Confirmation::decode(data)?),
+                NetworkMessage::AuthSpake2Confirmation(AuthSpake2Confirmation::decode_body(body)?),
             ),
             NetworkMessageType::AuthStatus => {
-                Ok(NetworkMessage::AuthStatus(AuthStatus::decode(data)?))
+                Ok(NetworkMessage::AuthStatus(AuthStatus::decode_body(body)?))
             }
             NetworkMessageType::AuthSpake2Need => {
                 unimplemented!("AuthSpake2Need message not yet supported")
