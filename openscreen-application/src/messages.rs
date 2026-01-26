@@ -21,8 +21,10 @@
 //!
 //! Reference: ref/w3c_ref/messages_appendix.cddl
 
+use bytes::Buf;
 use heapless::Vec;
 use minicbor::{Decoder, Encoder};
+use openscreen_common::quinn_varint::{Codec, VarInt};
 use openscreen_common::{MessageError, MAX_STRING_LENGTH, MAX_URLS};
 
 /// A wrapper around heapless::Vec that implements minicbor's Write trait
@@ -44,6 +46,38 @@ impl<'a, const N: usize> minicbor::encode::Write for VecWriter<'a, N> {
             .extend_from_slice(buf)
             .map_err(|_| MessageError::BufferFull)
     }
+}
+
+/// Encode a type key as RFC 9000 variable-length integer into a heapless::Vec
+fn encode_type_key<const N: usize>(
+    type_key: u16,
+    buf: &mut Vec<u8, N>,
+) -> Result<(), MessageError> {
+    let varint = VarInt::from(type_key);
+    let size = varint.size();
+
+    // Ensure we have space
+    if buf.len() + size > N {
+        return Err(MessageError::BufferFull);
+    }
+
+    // Encode varint to a small stack buffer, then copy
+    let mut temp = [0u8; 8];
+    let mut slice = &mut temp[..];
+    varint.encode(&mut slice);
+    buf.extend_from_slice(&temp[..size])
+        .map_err(|_| MessageError::BufferFull)
+}
+
+/// Decode a type key as RFC 9000 variable-length integer from a byte slice.
+/// Returns the type key and the number of bytes consumed.
+fn decode_type_key(data: &[u8]) -> Result<(u16, usize), MessageError> {
+    let mut cursor = data;
+    let varint = VarInt::decode(&mut cursor).map_err(|_| MessageError::DecodeFailed)?;
+    let consumed = data.len() - cursor.remaining();
+    let value = varint.into_inner();
+    let type_key = u16::try_from(value).map_err(|_| MessageError::InvalidMessageType)?;
+    Ok((type_key, consumed))
 }
 
 /// Maximum size for a single CBOR message
@@ -164,14 +198,12 @@ pub struct AgentInfoRequest {
 impl AgentInfoRequest {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(ApplicationMessageType::AgentInfoRequest as u16, buf)?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::AgentInfoRequest as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with request-id
         encoder.map(1).map_err(|_| MessageError::EncodeFailed)?;
@@ -185,19 +217,17 @@ impl AgentInfoRequest {
 
     /// Decode this message from CBOR
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::AgentInfoRequest as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with one field
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -227,14 +257,12 @@ pub struct AgentInfoResponse<'a> {
 impl<'a> AgentInfoResponse<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(ApplicationMessageType::AgentInfoResponse as u16, buf)?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::AgentInfoResponse as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 2 fields
         encoder.map(2).map_err(|_| MessageError::EncodeFailed)?;
@@ -294,19 +322,17 @@ impl<'a> AgentInfoResponse<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::AgentInfoResponse as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 2 fields
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -427,14 +453,12 @@ pub struct AgentStatusRequest<'a> {
 impl<'a> AgentStatusRequest<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(ApplicationMessageType::AgentStatusRequest as u16, buf)?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::AgentStatusRequest as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with request-id and optional status
         let field_count = if self.status.is_some() { 2 } else { 1 };
@@ -464,19 +488,17 @@ impl<'a> AgentStatusRequest<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::DecodeFailed);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::AgentStatusRequest as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Decode body map
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -532,14 +554,12 @@ pub struct AgentStatusResponse<'a> {
 impl<'a> AgentStatusResponse<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(ApplicationMessageType::AgentStatusResponse as u16, buf)?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::AgentStatusResponse as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with request-id and optional status
         let field_count = if self.status.is_some() { 2 } else { 1 };
@@ -569,19 +589,17 @@ impl<'a> AgentStatusResponse<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::DecodeFailed);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::AgentStatusResponse as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Decode body map
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -636,14 +654,12 @@ pub struct AgentInfoEvent<'a> {
 impl<'a> AgentInfoEvent<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(ApplicationMessageType::AgentInfoEvent as u16, buf)?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::AgentInfoEvent as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with one field (agent-info)
         encoder.map(1).map_err(|_| MessageError::EncodeFailed)?;
@@ -697,19 +713,17 @@ impl<'a> AgentInfoEvent<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::DecodeFailed);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::AgentInfoEvent as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with agent-info
         let body_map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -957,14 +971,12 @@ pub struct PresentationStartRequest<'a> {
 impl<'a> PresentationStartRequest<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(ApplicationMessageType::PresentationStartRequest as u16, buf)?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationStartRequest as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 4 fields
         encoder.map(4).map_err(|_| MessageError::EncodeFailed)?;
@@ -1007,19 +1019,17 @@ impl<'a> PresentationStartRequest<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationStartRequest as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 4 fields
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -1114,14 +1124,15 @@ pub struct PresentationStartResponse {
 impl PresentationStartResponse {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationStartResponse as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationStartResponse as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 3 or 4 fields
         let field_count = if self.http_response_code.is_some() {
@@ -1162,19 +1173,17 @@ impl PresentationStartResponse {
 
     /// Decode this message from CBOR
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationStartResponse as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 3 or 4 fields
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -1236,14 +1245,15 @@ pub struct PresentationTerminationRequest<'a> {
 impl<'a> PresentationTerminationRequest<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationTerminationRequest as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationTerminationRequest as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 3 fields
         encoder.map(3).map_err(|_| MessageError::EncodeFailed)?;
@@ -1271,19 +1281,17 @@ impl<'a> PresentationTerminationRequest<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationTerminationRequest as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Read the map
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -1336,14 +1344,15 @@ pub struct PresentationTerminationResponse {
 impl PresentationTerminationResponse {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationTerminationResponse as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationTerminationResponse as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 2 fields
         encoder.map(2).map_err(|_| MessageError::EncodeFailed)?;
@@ -1365,19 +1374,17 @@ impl PresentationTerminationResponse {
 
     /// Decode this message from CBOR
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationTerminationResponse as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         if map_len != Some(2) {
@@ -1426,14 +1433,15 @@ pub struct PresentationTerminationEvent<'a> {
 impl<'a> PresentationTerminationEvent<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationTerminationEvent as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationTerminationEvent as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 3 fields
         encoder.map(3).map_err(|_| MessageError::EncodeFailed)?;
@@ -1461,19 +1469,17 @@ impl<'a> PresentationTerminationEvent<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationTerminationEvent as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         if map_len != Some(3) {
@@ -1528,14 +1534,15 @@ pub struct PresentationConnectionOpenRequest<'a> {
 impl<'a> PresentationConnectionOpenRequest<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationConnectionOpenRequest as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationConnectionOpenRequest as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 3 fields
         encoder.map(3).map_err(|_| MessageError::EncodeFailed)?;
@@ -1563,19 +1570,17 @@ impl<'a> PresentationConnectionOpenRequest<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationConnectionOpenRequest as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         if map_len != Some(3) {
@@ -1630,14 +1635,15 @@ pub struct PresentationConnectionOpenResponse {
 impl PresentationConnectionOpenResponse {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationConnectionOpenResponse as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationConnectionOpenResponse as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 4 fields
         encoder.map(4).map_err(|_| MessageError::EncodeFailed)?;
@@ -1671,19 +1677,17 @@ impl PresentationConnectionOpenResponse {
 
     /// Decode this message from CBOR
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationConnectionOpenResponse as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         if map_len != Some(4) {
@@ -1744,14 +1748,15 @@ pub struct PresentationUrlAvailabilityRequest<'a> {
 impl<'a> PresentationUrlAvailabilityRequest<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationUrlAvailabilityRequest as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationUrlAvailabilityRequest as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 4 fields
         encoder.map(4).map_err(|_| MessageError::EncodeFailed)?;
@@ -1788,19 +1793,17 @@ impl<'a> PresentationUrlAvailabilityRequest<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationUrlAvailabilityRequest as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         if map_len != Some(4) {
@@ -1865,14 +1868,15 @@ pub struct PresentationUrlAvailabilityResponse {
 impl PresentationUrlAvailabilityResponse {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationUrlAvailabilityResponse as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationUrlAvailabilityResponse as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 2 fields
         encoder.map(2).map_err(|_| MessageError::EncodeFailed)?;
@@ -1899,19 +1903,17 @@ impl PresentationUrlAvailabilityResponse {
 
     /// Decode this message from CBOR
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationUrlAvailabilityResponse as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         if map_len != Some(2) {
@@ -1969,14 +1971,15 @@ pub struct PresentationUrlAvailabilityEvent {
 impl PresentationUrlAvailabilityEvent {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationUrlAvailabilityEvent as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationUrlAvailabilityEvent as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 2 fields
         encoder.map(2).map_err(|_| MessageError::EncodeFailed)?;
@@ -2003,19 +2006,17 @@ impl PresentationUrlAvailabilityEvent {
 
     /// Decode this message from CBOR
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationUrlAvailabilityEvent as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         if map_len != Some(2) {
@@ -2078,14 +2079,15 @@ pub struct PresentationConnectionCloseEvent<'a> {
 impl<'a> PresentationConnectionCloseEvent<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationConnectionCloseEvent as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationConnectionCloseEvent as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 3 or 4 fields (error_message is optional)
         let field_count = if self.error_message.is_some() { 4 } else { 3 };
@@ -2124,19 +2126,17 @@ impl<'a> PresentationConnectionCloseEvent<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationConnectionCloseEvent as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
         let field_count = map_len.ok_or(MessageError::InvalidField)?;
@@ -2194,14 +2194,15 @@ pub struct PresentationConnectionMessage<'a> {
 impl<'a> PresentationConnectionMessage<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(
+            ApplicationMessageType::PresentationConnectionMessage as u16,
+            buf,
+        )?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationConnectionMessage as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 2 fields
         encoder.map(2).map_err(|_| MessageError::EncodeFailed)?;
@@ -2223,19 +2224,17 @@ impl<'a> PresentationConnectionMessage<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationConnectionMessage as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Read the map
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -2282,14 +2281,12 @@ pub struct PresentationChangeEvent<'a> {
 impl<'a> PresentationChangeEvent<'a> {
     /// Encode this message to CBOR
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(ApplicationMessageType::PresentationChangeEvent as u16, buf)?;
+
+        // Write CBOR body
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(ApplicationMessageType::PresentationChangeEvent as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 2 fields
         encoder.map(2).map_err(|_| MessageError::EncodeFailed)?;
@@ -2311,19 +2308,17 @@ impl<'a> PresentationChangeEvent<'a> {
 
     /// Decode this message from CBOR
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != ApplicationMessageType::PresentationChangeEvent as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode from CBOR body (without type key)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Read the map
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -2430,94 +2425,94 @@ impl<'a> ApplicationMessage<'a> {
     /// Decode a message from CBOR
     pub fn decode(buf: &'a [u8]) -> Result<Self, MessageError> {
         // First, peek at the message type to determine which variant to decode
-        let mut decoder = Decoder::new(buf);
-
-        // All messages are encoded as [type_key, payload]
-        let _array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Type key is encoded as RFC 9000 variable-length integer
+        let (type_key, consumed) = decode_type_key(buf)?;
 
         let msg_type = ApplicationMessageType::from_u16(type_key)?;
+        let body = &buf[consumed..];
 
-        // Now decode the full message based on type
+        // Decode the body based on type (type key already consumed)
         match msg_type {
             ApplicationMessageType::AgentInfoRequest => Ok(ApplicationMessage::AgentInfoRequest(
-                AgentInfoRequest::decode(buf)?,
+                AgentInfoRequest::decode_body(body)?,
             )),
             ApplicationMessageType::AgentInfoResponse => Ok(ApplicationMessage::AgentInfoResponse(
-                AgentInfoResponse::decode(buf)?,
+                AgentInfoResponse::decode_body(body)?,
             )),
             ApplicationMessageType::AgentStatusRequest => Ok(
-                ApplicationMessage::AgentStatusRequest(AgentStatusRequest::decode(buf)?),
+                ApplicationMessage::AgentStatusRequest(AgentStatusRequest::decode_body(body)?),
             ),
             ApplicationMessageType::AgentStatusResponse => Ok(
-                ApplicationMessage::AgentStatusResponse(AgentStatusResponse::decode(buf)?),
+                ApplicationMessage::AgentStatusResponse(AgentStatusResponse::decode_body(body)?),
             ),
             ApplicationMessageType::AgentInfoEvent => Ok(ApplicationMessage::AgentInfoEvent(
-                AgentInfoEvent::decode(buf)?,
+                AgentInfoEvent::decode_body(body)?,
             )),
             ApplicationMessageType::PresentationUrlAvailabilityRequest => {
                 Ok(ApplicationMessage::PresentationUrlAvailabilityRequest(
-                    PresentationUrlAvailabilityRequest::decode(buf)?,
+                    PresentationUrlAvailabilityRequest::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationUrlAvailabilityResponse => {
                 Ok(ApplicationMessage::PresentationUrlAvailabilityResponse(
-                    PresentationUrlAvailabilityResponse::decode(buf)?,
+                    PresentationUrlAvailabilityResponse::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationUrlAvailabilityEvent => {
                 Ok(ApplicationMessage::PresentationUrlAvailabilityEvent(
-                    PresentationUrlAvailabilityEvent::decode(buf)?,
+                    PresentationUrlAvailabilityEvent::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationStartRequest => {
                 Ok(ApplicationMessage::PresentationStartRequest(
-                    PresentationStartRequest::decode(buf)?,
+                    PresentationStartRequest::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationStartResponse => {
                 Ok(ApplicationMessage::PresentationStartResponse(
-                    PresentationStartResponse::decode(buf)?,
+                    PresentationStartResponse::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationTerminationRequest => {
                 Ok(ApplicationMessage::PresentationTerminationRequest(
-                    PresentationTerminationRequest::decode(buf)?,
+                    PresentationTerminationRequest::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationTerminationResponse => {
                 Ok(ApplicationMessage::PresentationTerminationResponse(
-                    PresentationTerminationResponse::decode(buf)?,
+                    PresentationTerminationResponse::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationTerminationEvent => {
                 Ok(ApplicationMessage::PresentationTerminationEvent(
-                    PresentationTerminationEvent::decode(buf)?,
+                    PresentationTerminationEvent::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationConnectionOpenRequest => {
                 Ok(ApplicationMessage::PresentationConnectionOpenRequest(
-                    PresentationConnectionOpenRequest::decode(buf)?,
+                    PresentationConnectionOpenRequest::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationConnectionOpenResponse => {
                 Ok(ApplicationMessage::PresentationConnectionOpenResponse(
-                    PresentationConnectionOpenResponse::decode(buf)?,
+                    PresentationConnectionOpenResponse::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationConnectionCloseEvent => {
                 Ok(ApplicationMessage::PresentationConnectionCloseEvent(
-                    PresentationConnectionCloseEvent::decode(buf)?,
+                    PresentationConnectionCloseEvent::decode_body(body)?,
                 ))
             }
             ApplicationMessageType::PresentationConnectionMessage => {
                 Ok(ApplicationMessage::PresentationConnectionMessage(
-                    PresentationConnectionMessage::decode(buf)?,
+                    PresentationConnectionMessage::decode_body(body)?,
                 ))
             }
-            ApplicationMessageType::PresentationChangeEvent => Ok(
-                ApplicationMessage::PresentationChangeEvent(PresentationChangeEvent::decode(buf)?),
-            ),
+            ApplicationMessageType::PresentationChangeEvent => {
+                Ok(ApplicationMessage::PresentationChangeEvent(
+                    PresentationChangeEvent::decode_body(body)?,
+                ))
+            }
         }
     }
 }

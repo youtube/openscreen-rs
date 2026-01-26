@@ -79,10 +79,8 @@ fn decode_type_key(data: &[u8]) -> Result<(u16, usize), MessageError> {
     let varint = VarInt::decode(&mut cursor).map_err(|_| MessageError::DecodeFailed)?;
     let consumed = data.len() - cursor.remaining();
     let value = varint.into_inner();
-    if value > u16::MAX as u64 {
-        return Err(MessageError::InvalidMessageType);
-    }
-    Ok((value as u16, consumed))
+    let type_key = u16::try_from(value).map_err(|_| MessageError::InvalidMessageType)?;
+    Ok((type_key, consumed))
 }
 
 /// Maximum size for a single CBOR message
