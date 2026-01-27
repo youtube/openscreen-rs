@@ -74,7 +74,7 @@ fn encode_type_key<const N: usize>(
 
 /// Decode a type key as RFC 9000 variable-length integer from a byte slice.
 /// Returns the type key and the number of bytes consumed.
-fn decode_type_key(data: &[u8]) -> Result<(u16, usize), MessageError> {
+pub fn decode_type_key(data: &[u8]) -> Result<(u16, usize), MessageError> {
     let mut cursor = data;
     let varint = VarInt::decode(&mut cursor).map_err(|_| MessageError::DecodeFailed)?;
     let consumed = data.len() - cursor.remaining();
@@ -115,6 +115,23 @@ impl NetworkMessageType {
             _ => Err(MessageError::InvalidMessageType),
         }
     }
+}
+
+/// Returns true if the type key is a SPAKE2 authentication message (1001-1005).
+pub fn is_auth_type_key(type_key: u16) -> bool {
+    NetworkMessageType::from_u16(type_key).is_ok()
+}
+
+/// Returns true if the type key is an agent-info message that may arrive
+/// before authentication completes.
+///
+/// Per spec (application.bs §4.1): "Any agent may send [agent-info-request]
+/// at any time." These messages must be tolerated during the auth phase.
+///
+/// Type keys: 10 (agent-info-request), 11 (agent-info-response),
+/// 12 (agent-status-request), 13 (agent-status-response), 120 (agent-info-event).
+pub fn is_agent_info_type_key(type_key: u16) -> bool {
+    matches!(type_key, 10 | 11 | 12 | 13 | 120)
 }
 
 /// SPAKE2 PSK status value

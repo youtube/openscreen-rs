@@ -108,6 +108,18 @@ impl RustCryptoCryptoProvider {
                     .unwrap_or_else(|| Identity::new(b"initiator"));
                 let id_b = Identity::new(b"responder");
 
+                trace!(
+                    "SPAKE2 Start: is_responder={}, id_a={:02x?}, id_b={:02x?}, password_len={}",
+                    is_responder,
+                    if password_id.is_some() {
+                        password_id.unwrap()
+                    } else {
+                        b"initiator".as_slice()
+                    },
+                    b"responder".as_slice(),
+                    password.len()
+                );
+
                 // Create SPAKE2 instance - use start_a() for initiator or start_b() for responder
                 // SPAKE2 requires different group generators (M and N) for each role
                 let (spake2, outbound_msg) = if *is_responder {

@@ -38,7 +38,7 @@ use heapless::{String, Vec};
 use openscreen_common::{MessageError, StreamId, MAX_CBOR_SIZE};
 use openscreen_crypto::{CryptoRequest, CryptoResult};
 use openscreen_network::{
-    NetworkError, NetworkEvent, NetworkInput, NetworkOutput, Spake2StateMachine,
+    NetworkError, NetworkEvent, NetworkInput, NetworkOutput, NetworkStateMachine,
 };
 
 pub use messages::*;
@@ -202,7 +202,7 @@ impl From<MessageError> for ApplicationError {
 
 /// Application protocol state machine
 pub struct ApplicationStateMachine {
-    network: Spake2StateMachine,
+    network: NetworkStateMachine,
     app_state: ApplicationState,
     next_request_id: u64,
 }
@@ -211,7 +211,7 @@ impl ApplicationStateMachine {
     /// Create a new application state machine
     pub fn new() -> Self {
         Self {
-            network: Spake2StateMachine::default(),
+            network: NetworkStateMachine::default(),
             app_state: ApplicationState::Idle,
             next_request_id: 1,
         }

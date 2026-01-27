@@ -35,7 +35,9 @@ use openscreen_crypto::{CryptoRequest, CryptoResult};
 pub use crypto_data::*;
 pub use messages::*;
 pub use state::*;
-pub use state_machine::{Spake2StateMachine, State as Spake2State};
+pub use state_machine::{
+    ConnectionPhase, NetworkStateMachine, PeerAgentInfo, Spake2StateMachine, State as Spake2State,
+};
 
 /// Maximum encoded message size
 pub const MAX_CBOR_SIZE: usize = 1024;

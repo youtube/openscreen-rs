@@ -38,7 +38,7 @@ pub mod server;
 
 use openscreen_crypto::CryptoProvider;
 use openscreen_network::{
-    state_machine::Spake2StateMachine, CryptoData, NetworkError, NetworkInput, NetworkOutput,
+    state_machine::NetworkStateMachine, CryptoData, NetworkError, NetworkInput, NetworkOutput,
 };
 use quinn::{ClientConfig, Endpoint};
 use rustls::pki_types::CertificateDer;
@@ -108,7 +108,7 @@ pub struct QuinnClient<C: CryptoProvider> {
     /// Active QUIC connection (if connected)
     connection: Option<quinn::Connection>,
     /// Network protocol state machine (owns CryptoData internally)
-    network_state: Spake2StateMachine,
+    network_state: NetworkStateMachine,
     /// Crypto provider for executing crypto operations
     crypto_provider: C,
     /// Our TLS certificate (for computing fingerprint)
@@ -171,7 +171,7 @@ impl<C: CryptoProvider> QuinnClient<C> {
         Ok(Self {
             endpoint,
             connection: None,
-            network_state: Spake2StateMachine::new(CryptoData::new()),
+            network_state: NetworkStateMachine::new(CryptoData::new()),
             crypto_provider,
             local_cert_der: cert_der,
         })
