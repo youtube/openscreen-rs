@@ -50,9 +50,16 @@ impl AwaitingCapabilities {
 
                 if crypto_data.is_responder {
                     // Responder: wait for initiator's handshake
+                    log::debug!(
+                        "AwaitingCapabilities: responder, transitioning to AwaitingHandshake"
+                    );
                     Ok(State::AwaitingHandshake(AwaitingHandshake::new()))
                 } else {
                     // Initiator: request crypto to generate handshake
+                    log::debug!(
+                        "AwaitingCapabilities: initiator, requesting SPAKE2 Start with password_id=None (identity will be 'initiator'/'responder'), psk_len={}",
+                        crypto_data.psk.len()
+                    );
                     let op = CryptoOpKind::Spake2(Spake2Operation::Start {
                         password_id: None,
                         password: &crypto_data.psk,

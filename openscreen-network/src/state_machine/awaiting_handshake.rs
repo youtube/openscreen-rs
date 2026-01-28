@@ -122,6 +122,10 @@ impl AwaitingHandshake {
                 // Responder doesn't have its own handshake yet -> request Spake2::Start
                 if crypto_data.is_responder && crypto_data.spake2_public.is_empty() {
                     // Responder flow: Request Spake2::Start to generate our handshake
+                    log::debug!(
+                        "AwaitingHandshake: responder requesting SPAKE2 Start with password_id=None (identity will be 'initiator'/'responder'), psk_len={}",
+                        crypto_data.psk.len()
+                    );
                     let op_id = 1; // TODO: proper op_id generation
                     let request = CryptoRequest {
                         op_id,

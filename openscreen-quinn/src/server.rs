@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use openscreen_crypto::CryptoProvider;
 use openscreen_crypto_rustcrypto::RustCryptoCryptoProvider;
 use openscreen_network::{
-    state_machine::Spake2StateMachine, CryptoData, NetworkInput, NetworkOutput,
+    state_machine::NetworkStateMachine, CryptoData, NetworkInput, NetworkOutput,
 };
 use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
@@ -273,7 +273,7 @@ impl QuinnServer {
             debug!("[CONN:{}] Auth token configured for validation", conn_id);
         }
 
-        let mut network_state = Spake2StateMachine::new(crypto_data);
+        let mut network_state = NetworkStateMachine::new(crypto_data);
         let crypto_provider = RustCryptoCryptoProvider::new();
 
         // Send initial auth-capabilities on connection
@@ -321,7 +321,7 @@ impl QuinnServer {
     async fn drive_authentication(
         connection: quinn::Connection,
         conn_id: String,
-        mut network_state: Spake2StateMachine,
+        mut network_state: NetworkStateMachine,
         mut crypto_provider: RustCryptoCryptoProvider,
     ) -> Result<()> {
         let mut iteration = 0u64;

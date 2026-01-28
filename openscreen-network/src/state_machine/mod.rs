@@ -72,6 +72,7 @@ pub use idle::Idle;
 pub use initiating_handshake::InitiatingHandshake;
 pub use negotiating::Negotiating;
 
+use crate::messages::{decode_type_key, is_agent_info_type_key, is_auth_type_key};
 use crate::{NetworkError, NetworkInput, NetworkOutput};
 use heapless::Vec;
 
@@ -258,6 +259,163 @@ impl Spake2StateMachine {
 }
 
 impl Default for Spake2StateMachine {
+    fn default() -> Self {
+        Self::new(crate::CryptoData::new())
+    }
+}
+
+/// Overall network connection phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionPhase {
+    /// Connected but not yet authenticated.
+    Unauthenticated,
+    /// Authentication completed successfully.
+    Authenticated,
+}
+
+/// Stored agent info received during the network phase.
+/// `verified` is false until authentication succeeds.
+#[derive(Debug, Clone, Default)]
+pub struct PeerAgentInfo {
+    pub display_name: heapless::String<256>,
+    pub model_name: heapless::String<256>,
+    pub capabilities: heapless::Vec<u64, 16>,
+    pub verified: bool,
+}
+
+/// Top-level network protocol state machine.
+///
+/// Routes incoming data to the appropriate sub-handler based on
+/// message type key:
+/// - Auth messages (1001-1005) → `Spake2StateMachine`
+/// - Agent-info messages (10, 11, 12, 13, 120) → logged and skipped
+/// - Unknown → logged and skipped
+///
+/// Per spec (network.bs §6.2): "Prior to authentication, a message may be
+/// exchanged (such as further metadata), but such info should be treated as
+/// unverified."
+pub struct NetworkStateMachine {
+    auth: Spake2StateMachine,
+    phase: ConnectionPhase,
+    peer_agent_info: Option<PeerAgentInfo>,
+}
+
+impl NetworkStateMachine {
+    /// Create a new network state machine wrapping a SPAKE2 authenticator.
+    pub fn new(crypto_data: crate::CryptoData) -> Self {
+        Self {
+            auth: Spake2StateMachine::new(crypto_data),
+            phase: ConnectionPhase::Unauthenticated,
+            peer_agent_info: None,
+        }
+    }
+
+    /// Handle a network input event.
+    ///
+    /// Same signature as `Spake2StateMachine::handle()` so Quinn code
+    /// changes minimally.
+    pub fn handle<'a, 'b>(
+        &'a mut self,
+        input: &'b NetworkInput<'b>,
+        outputs: &mut Vec<NetworkOutput<'a>, 16>,
+    ) -> Result<(), NetworkError> {
+        match input {
+            NetworkInput::DataReceived(_stream_id, data) => {
+                // Peek type key to route the message
+                let (type_key, _) =
+                    decode_type_key(data).map_err(|_| NetworkError::DecodeFailed)?;
+
+                if is_auth_type_key(type_key) {
+                    // Delegate to SPAKE2 state machine
+                    self.auth.handle(input, outputs)
+                } else if is_agent_info_type_key(type_key) {
+                    // Handle agent-info at network level (log and skip)
+                    self.handle_agent_info(type_key)
+                } else {
+                    // Unknown non-auth message — skip gracefully
+                    log::debug!(
+                        "Skipping unknown message type key {type_key} during network phase"
+                    );
+                    Ok(())
+                }
+            }
+            // All other inputs (TransportConnected, CryptoCompleted, Tick, etc.) → auth
+            _ => self.auth.handle(input, outputs),
+        }
+    }
+
+    fn handle_agent_info(&mut self, type_key: u16) -> Result<(), NetworkError> {
+        match type_key {
+            10 => {
+                // agent-info-request: peer wants our info
+                log::debug!("Received agent-info-request during network phase, noted");
+                Ok(())
+            }
+            11 => {
+                // agent-info-response: peer sent their info
+                log::debug!(
+                    "Received agent-info-response during network phase, storing as unverified"
+                );
+                // TODO: parse AgentInfoResponse, populate self.peer_agent_info
+                Ok(())
+            }
+            12 => {
+                // agent-status-request
+                log::debug!("Received agent-status-request during network phase, noted");
+                Ok(())
+            }
+            13 => {
+                // agent-status-response
+                log::debug!("Received agent-status-response during network phase, noted");
+                Ok(())
+            }
+            120 => {
+                // agent-info-event
+                log::debug!("Received agent-info-event during network phase, noted");
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Check if authentication succeeded.
+    pub fn is_authenticated(&self) -> bool {
+        self.auth.is_authenticated()
+    }
+
+    /// Check if authentication failed.
+    pub fn is_failed(&self) -> bool {
+        self.auth.is_failed()
+    }
+
+    /// Get the current connection phase, synchronising with the auth state.
+    pub fn phase(&mut self) -> ConnectionPhase {
+        if self.auth.is_authenticated() && self.phase == ConnectionPhase::Unauthenticated {
+            self.phase = ConnectionPhase::Authenticated;
+            if let Some(ref mut info) = self.peer_agent_info {
+                info.verified = true;
+            }
+        }
+        self.phase
+    }
+
+    /// Get peer agent info (if received).
+    pub fn peer_agent_info(&self) -> Option<&PeerAgentInfo> {
+        self.peer_agent_info.as_ref()
+    }
+
+    /// Get mutable access to crypto data (for setting PSK, auth token, etc.)
+    pub fn crypto_data_mut(&mut self) -> &mut crate::CryptoData {
+        self.auth.crypto_data_mut()
+    }
+
+    /// Get the current SPAKE2 state (for debugging/testing).
+    pub fn auth_state(&self) -> &State {
+        self.auth.state()
+    }
+}
+
+impl Default for NetworkStateMachine {
     fn default() -> Self {
         Self::new(crate::CryptoData::new())
     }
