@@ -21,7 +21,9 @@
 
 mod error;
 pub mod quinn_varint;
+mod type_key;
 mod types;
 
 pub use error::*;
+pub use type_key::*;
 pub use types::*;

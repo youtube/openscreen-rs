@@ -23,11 +23,9 @@
 //!
 //! Reference: ref/w3c_ref/messages_appendix.cddl
 
-use bytes::Buf;
 use heapless::Vec;
 use minicbor::{Decoder, Encoder};
-use openscreen_common::quinn_varint::{Codec, VarInt};
-use openscreen_common::MessageError;
+use openscreen_common::{decode_type_key, encode_type_key, MessageError};
 
 /// A wrapper around heapless::Vec that implements minicbor's Write trait
 /// This allows us to encode directly into the Vec without stack allocations
@@ -49,38 +47,6 @@ impl<'a, const N: usize> minicbor::encode::Write for VecWriter<'a, N> {
             .extend_from_slice(buf)
             .map_err(|_| MessageError::BufferFull)
     }
-}
-
-/// Encode a type key as RFC 9000 variable-length integer into a heapless::Vec
-fn encode_type_key<const N: usize>(
-    type_key: u16,
-    buf: &mut Vec<u8, N>,
-) -> Result<(), MessageError> {
-    let varint = VarInt::from(type_key);
-    let size = varint.size();
-
-    // Ensure we have space
-    if buf.len() + size > N {
-        return Err(MessageError::BufferFull);
-    }
-
-    // Encode varint to a small stack buffer, then copy
-    let mut temp = [0u8; 8];
-    let mut slice = &mut temp[..];
-    varint.encode(&mut slice);
-    buf.extend_from_slice(&temp[..size])
-        .map_err(|_| MessageError::BufferFull)
-}
-
-/// Decode a type key as RFC 9000 variable-length integer from a byte slice.
-/// Returns the type key and the number of bytes consumed.
-fn decode_type_key(data: &[u8]) -> Result<(u16, usize), MessageError> {
-    let mut cursor = data;
-    let varint = VarInt::decode(&mut cursor).map_err(|_| MessageError::DecodeFailed)?;
-    let consumed = data.len() - cursor.remaining();
-    let value = varint.into_inner();
-    let type_key = u16::try_from(value).map_err(|_| MessageError::InvalidMessageType)?;
-    Ok((type_key, consumed))
 }
 
 /// Maximum size for a single CBOR message
