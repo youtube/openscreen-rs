@@ -53,10 +53,12 @@ impl SerialNumber {
         bytes
     }
 
-    /// Base64 encode serial number per RFC 4648
+    /// URL-safe base64 encode serial number (no padding).
+    /// Spec says RFC 4648 base64, but standard base64 contains +/= which are
+    /// invalid in DNS labels. See: https://github.com/w3c/openscreenprotocol/issues/365
     pub fn to_base64(&self) -> String {
-        use base64::{engine::general_purpose::STANDARD, Engine};
-        STANDARD.encode(self.to_bytes())
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        URL_SAFE_NO_PAD.encode(self.to_bytes())
     }
 
     /// Parse from 160-bit bytes
@@ -325,7 +327,7 @@ mod tests {
         assert_eq!(bytes.len(), 20); // 160 bits
 
         let base64 = serial.to_base64();
-        assert_eq!(base64.len(), 28); // base64 encoding of 20 bytes
+        assert_eq!(base64.len(), 27); // URL-safe base64 (no padding) of 20 bytes
     }
 
     #[test]
@@ -386,8 +388,9 @@ mod tests {
         let parts: Vec<&str> = cert.hostname.split('.').collect();
         assert!(parts.len() >= 3);
 
-        // First part should be base64 serial (28 chars for 160-bit number)
-        assert_eq!(parts[0].len(), 28);
+        // First part should be URL-safe base64 serial (27 chars for 160-bit number, no padding)
+        // See: https://github.com/w3c/openscreenprotocol/issues/365
+        assert_eq!(parts[0].len(), 27);
 
         // Second part should be sanitized name
         assert_eq!(parts[1], "receiver");
@@ -413,12 +416,13 @@ mod tests {
         let serial = SerialNumber::generate();
         let base64 = serial.to_base64();
 
-        // 20 bytes encoded in base64 = ceil(20 * 8 / 6) = 28 chars (with padding)
-        assert_eq!(base64.len(), 28);
+        // 20 bytes encoded in URL-safe base64 (no padding) = ceil(20 * 8 / 6) = 27 chars
+        // See: https://github.com/w3c/openscreenprotocol/issues/365
+        assert_eq!(base64.len(), 27);
 
-        // Should be valid base64
-        use base64::{engine::general_purpose::STANDARD, Engine};
-        let decoded = STANDARD.decode(&base64).unwrap();
+        // Should be valid URL-safe base64 (no padding)
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let decoded = URL_SAFE_NO_PAD.decode(&base64).unwrap();
         assert_eq!(decoded.len(), 20);
     }
 

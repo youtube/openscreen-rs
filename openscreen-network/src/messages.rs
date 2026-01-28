@@ -17,10 +17,16 @@
 //! This module implements CBOR encoding/decoding for OpenScreen Network Protocol messages
 //! (authentication) based on the W3C specification's CDDL definitions.
 //!
+//! Message format per spec:
+//! 1. Type key encoded as RFC 9000 variable-length integer
+//! 2. Message body encoded as CBOR
+//!
 //! Reference: ref/w3c_ref/messages_appendix.cddl
 
+use bytes::Buf;
 use heapless::Vec;
 use minicbor::{Decoder, Encoder};
+use openscreen_common::quinn_varint::{Codec, VarInt};
 use openscreen_common::MessageError;
 
 /// A wrapper around heapless::Vec that implements minicbor's Write trait
@@ -43,6 +49,38 @@ impl<'a, const N: usize> minicbor::encode::Write for VecWriter<'a, N> {
             .extend_from_slice(buf)
             .map_err(|_| MessageError::BufferFull)
     }
+}
+
+/// Encode a type key as RFC 9000 variable-length integer into a heapless::Vec
+fn encode_type_key<const N: usize>(
+    type_key: u16,
+    buf: &mut Vec<u8, N>,
+) -> Result<(), MessageError> {
+    let varint = VarInt::from(type_key);
+    let size = varint.size();
+
+    // Ensure we have space
+    if buf.len() + size > N {
+        return Err(MessageError::BufferFull);
+    }
+
+    // Encode varint to a small stack buffer, then copy
+    let mut temp = [0u8; 8];
+    let mut slice = &mut temp[..];
+    varint.encode(&mut slice);
+    buf.extend_from_slice(&temp[..size])
+        .map_err(|_| MessageError::BufferFull)
+}
+
+/// Decode a type key as RFC 9000 variable-length integer from a byte slice.
+/// Returns the type key and the number of bytes consumed.
+fn decode_type_key(data: &[u8]) -> Result<(u16, usize), MessageError> {
+    let mut cursor = data;
+    let varint = VarInt::decode(&mut cursor).map_err(|_| MessageError::DecodeFailed)?;
+    let consumed = data.len() - cursor.remaining();
+    let value = varint.into_inner();
+    let type_key = u16::try_from(value).map_err(|_| MessageError::InvalidMessageType)?;
+    Ok((type_key, consumed))
 }
 
 /// Maximum size for a single CBOR message
@@ -193,16 +231,16 @@ pub struct AuthCapabilities {
 }
 
 impl AuthCapabilities {
-    /// Encode this message to CBOR
+    /// Encode this message to bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(NetworkMessageType::AuthCapabilities as u16, buf)?;
+
+        // Write CBOR body (map only, no array wrapper)
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(NetworkMessageType::AuthCapabilities as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 2 or 3 fields (field 2 is mandatory, field 1 is optional)
         let field_count = if self.psk_input_methods.is_empty() {
@@ -242,21 +280,21 @@ impl AuthCapabilities {
         Ok(())
     }
 
-    /// Decode this message from CBOR
+    /// Decode this message from bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != NetworkMessageType::AuthCapabilities as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 2 or 3 fields (field 2 is mandatory, field 1 is optional)
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -319,16 +357,16 @@ pub struct AuthSpake2Handshake<'a> {
 }
 
 impl<'a> AuthSpake2Handshake<'a> {
-    /// Encode this message to CBOR
+    /// Encode this message to bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(NetworkMessageType::AuthSpake2Handshake as u16, buf)?;
+
+        // Write CBOR body (map only, no array wrapper)
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(NetworkMessageType::AuthSpake2Handshake as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 3 fields
         encoder.map(3).map_err(|_| MessageError::EncodeFailed)?;
@@ -358,21 +396,21 @@ impl<'a> AuthSpake2Handshake<'a> {
         Ok(())
     }
 
-    /// Decode this message from CBOR
+    /// Decode this message from bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != NetworkMessageType::AuthSpake2Handshake as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -445,16 +483,16 @@ pub struct AuthSpake2Confirmation<'a> {
 }
 
 impl<'a> AuthSpake2Confirmation<'a> {
-    /// Encode this message to CBOR
+    /// Encode this message to bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(NetworkMessageType::AuthSpake2Confirmation as u16, buf)?;
+
+        // Write CBOR body (map only, no array wrapper)
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(NetworkMessageType::AuthSpake2Confirmation as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 1 field
         encoder.map(1).map_err(|_| MessageError::EncodeFailed)?;
@@ -468,21 +506,21 @@ impl<'a> AuthSpake2Confirmation<'a> {
         Ok(())
     }
 
-    /// Decode this message from CBOR
+    /// Decode this message from bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != NetworkMessageType::AuthSpake2Confirmation as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &'a [u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 1 field
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -512,16 +550,16 @@ pub struct AuthStatus {
 }
 
 impl AuthStatus {
-    /// Encode this message to CBOR
+    /// Encode this message to bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), MessageError> {
+        // Write type key as RFC 9000 varint
+        encode_type_key(NetworkMessageType::AuthStatus as u16, buf)?;
+
+        // Write CBOR body (map only, no array wrapper)
         let writer = VecWriter::new(buf);
         let mut encoder = Encoder::new(writer);
-
-        // Top-level array: [type_key, body]
-        encoder.array(2).map_err(|_| MessageError::EncodeFailed)?;
-        encoder
-            .u16(NetworkMessageType::AuthStatus as u16)
-            .map_err(|_| MessageError::EncodeFailed)?;
 
         // Body is a map with 1 field
         encoder.map(1).map_err(|_| MessageError::EncodeFailed)?;
@@ -535,21 +573,21 @@ impl AuthStatus {
         Ok(())
     }
 
-    /// Decode this message from CBOR
+    /// Decode this message from bytes per OSP spec:
+    /// 1. Type key as RFC 9000 variable-length integer
+    /// 2. Message body as CBOR map
     pub fn decode(data: &[u8]) -> Result<Self, MessageError> {
-        let mut decoder = Decoder::new(data);
-
-        // Top-level array: [type_key, body]
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Check type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
+        // Read type key as RFC 9000 varint
+        let (type_key, consumed) = decode_type_key(data)?;
         if type_key != NetworkMessageType::AuthStatus as u16 {
             return Err(MessageError::InvalidMessageType);
         }
+        Self::decode_body(&data[consumed..])
+    }
+
+    /// Decode the CBOR body (after type key has been consumed)
+    pub fn decode_body(body: &[u8]) -> Result<Self, MessageError> {
+        let mut decoder = Decoder::new(body);
 
         // Body is a map with 1 field
         let map_len = decoder.map().map_err(|_| MessageError::DecodeFailed)?;
@@ -596,33 +634,25 @@ impl<'a> NetworkMessage<'a> {
         }
     }
 
-    /// Decode a NetworkMessage from CBOR data by inspecting the type key
+    /// Decode a NetworkMessage from bytes by inspecting the type key
     pub fn decode(data: &'a [u8]) -> Result<Self, MessageError> {
-        // Peek at the type key without consuming the decoder
-        let mut decoder = Decoder::new(data);
+        // Read type key as RFC 9000 varint to determine message type
+        let (type_key, consumed) = decode_type_key(data)?;
+        let body = &data[consumed..];
 
-        // Read array header
-        let array_len = decoder.array().map_err(|_| MessageError::DecodeFailed)?;
-        if array_len != Some(2) {
-            return Err(MessageError::InvalidField);
-        }
-
-        // Read type key
-        let type_key = decoder.u16().map_err(|_| MessageError::DecodeFailed)?;
-
-        // Now decode the full message based on type
+        // Decode the CBOR body based on message type
         match NetworkMessageType::from_u16(type_key)? {
             NetworkMessageType::AuthCapabilities => Ok(NetworkMessage::AuthCapabilities(
-                AuthCapabilities::decode(data)?,
+                AuthCapabilities::decode_body(body)?,
             )),
             NetworkMessageType::AuthSpake2Handshake => Ok(NetworkMessage::AuthSpake2Handshake(
-                AuthSpake2Handshake::decode(data)?,
+                AuthSpake2Handshake::decode_body(body)?,
             )),
             NetworkMessageType::AuthSpake2Confirmation => Ok(
-                NetworkMessage::AuthSpake2Confirmation(AuthSpake2Confirmation::decode(data)?),
+                NetworkMessage::AuthSpake2Confirmation(AuthSpake2Confirmation::decode_body(body)?),
             ),
             NetworkMessageType::AuthStatus => {
-                Ok(NetworkMessage::AuthStatus(AuthStatus::decode(data)?))
+                Ok(NetworkMessage::AuthStatus(AuthStatus::decode_body(body)?))
             }
             NetworkMessageType::AuthSpake2Need => {
                 unimplemented!("AuthSpake2Need message not yet supported")
@@ -631,11 +661,11 @@ impl<'a> NetworkMessage<'a> {
     }
 }
 
-/// Encode a NetworkMessage to CBOR bytes per W3C OpenScreen Protocol spec.
+/// Encode a NetworkMessage to bytes per W3C OpenScreen Protocol spec.
 ///
-/// Format: [message_type, message_body]
-/// - message_type: CBOR unsigned integer (1005 for AuthHandshake, 1006 for AuthConfirmation)
-/// - message_body: message-specific (bytes for handshake/confirmation)
+/// Format: [type_key][cbor_body]
+/// - type_key: RFC 9000 variable-length integer
+/// - cbor_body: message-specific CBOR map
 pub fn encode_network_message<'a>(
     msg: &crate::NetworkMessage<'a>,
 ) -> Result<heapless::Vec<u8, MAX_MESSAGE_SIZE>, MessageError> {
