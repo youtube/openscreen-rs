@@ -34,7 +34,7 @@ pub fn encode_type_key<const N: usize>(
     }
 
     // Encode varint to a small stack buffer, then copy
-    let mut temp = [0u8; 8];
+    let mut temp = [0u8; 4];
     let mut slice = &mut temp[..];
     varint.encode(&mut slice);
     buf.extend_from_slice(&temp[..size])
