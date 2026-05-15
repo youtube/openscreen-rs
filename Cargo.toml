@@ -44,10 +44,6 @@ unused_self = "allow"
 needless_pass_by_value = "allow"
 single_match_else = "allow"
 
-[patch.crates-io]
-# Use patched mdns-sd with configurable port for development
-mdns-sd = { git = "https://github.com/kaidokert/mdns-sd", tag = "v0.17.0_custom_port_1" }
-
 [workspace.dependencies]
 # Core protocol (no_std)
 openscreen-common = { path = "openscreen-common" }
