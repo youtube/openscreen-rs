@@ -304,7 +304,10 @@ impl QuinnServer {
         match tokio::time::timeout(AUTH_TIMEOUT, auth_future).await {
             Ok(Ok(_)) => {
                 info!("[CONN:{}] Authentication successful", conn_id);
-                Ok(AuthenticatedConnection { connection })
+                Ok(AuthenticatedConnection {
+                    connection,
+                    peer_fingerprint,
+                })
             }
             Ok(Err(e)) => {
                 error!("[CONN:{}] Authentication failed: {:?}", conn_id, e);
@@ -557,9 +560,29 @@ impl QuinnServer {
 /// Provides methods for sending and receiving application-layer messages.
 pub struct AuthenticatedConnection {
     connection: quinn::Connection,
+    /// SPKI SHA-256 fingerprint of the peer's client certificate, as
+    /// extracted from the TLS handshake and verified during SPAKE2.
+    peer_fingerprint: [u8; 32],
 }
 
 impl AuthenticatedConnection {
+    /// The peer's certificate SPKI fingerprint.
+    ///
+    /// This is the fingerprint that was extracted from the peer's TLS
+    /// certificate and bound into SPAKE2 via `CryptoData::set_peer_fingerprint`
+    /// during authentication. After `accept()` returns, SPAKE2 has confirmed
+    /// that the peer holds the private key matching this certificate, so the
+    /// fingerprint is a verified stable identity for the peer per the W3C
+    /// OpenScreen spec and RFC 9382.
+    ///
+    /// Receivers need this to key per-peer state (rate-limit counters,
+    /// presentation sessions, mDNS cross-references) because the fingerprint
+    /// is the only stable cryptographic identifier — IP, port, and mDNS
+    /// instance name can all churn while the fingerprint stays constant.
+    pub fn peer_fingerprint(&self) -> [u8; 32] {
+        self.peer_fingerprint
+    }
+
     /// Receive the next application message from the peer
     ///
     /// Blocks until a message is received or the connection is closed.
